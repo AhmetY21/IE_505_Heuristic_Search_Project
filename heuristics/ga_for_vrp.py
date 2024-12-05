@@ -1,15 +1,21 @@
 import random
 import numpy as np
 
+
 class GeneticAlgorithmVRP:
     def __init__(self, distance_matrix, demands, vehicle_capacity, customer_assignments, hubs, customers,
-                 population_size=50, num_generations=100, mutation_rate=0.1, crossover_rate=0.8):
+                    time_windows, vehicle_speed, max_hubs_to_open,
+                    population_size=50, num_generations=100, mutation_rate=0.1, crossover_rate=0.8,fixed_costs = None):
         self.distance_matrix = distance_matrix
         self.demands = demands
         self.vehicle_capacity = vehicle_capacity
-        self.customer_assignments = customer_assignments  # customer index -> hub index
-        self.hubs = hubs  # List of hub indices
-        self.customers = customers  # List of customer indices
+        self.customer_assignments = customer_assignments
+        self.hubs = hubs
+        self.customers = customers
+        self.time_windows = time_windows
+        #self.fixed_costs = fixed_costs
+        self.vehicle_speed = vehicle_speed
+        self.max_hubs_to_open = max_hubs_to_open
         self.population_size = population_size
         self.num_generations = num_generations
         self.mutation_rate = mutation_rate
@@ -50,21 +56,6 @@ class GeneticAlgorithmVRP:
             routes.append(current_route)
         return routes
 
-    def evaluate_solution(self, solution):
-        """Calculate total distance of all routes in the solution."""
-        total_distance = 0
-        for hub in self.hubs:
-            hub_routes = solution[hub]
-            for route in hub_routes:
-                route_distance = self.calculate_route_distance(route)
-                total_distance += route_distance
-        return total_distance
-
-    def validate_route(self, route, hub):
-        """Check if a route is feasible (capacity constraints)."""
-        total_demand = sum(self.demands[customer] for customer in route if customer != hub)
-        return total_demand <= self.vehicle_capacity
-
     def calculate_route_distance(self, route):
         """Calculate the total distance of a route."""
         distance = 0
@@ -75,74 +66,68 @@ class GeneticAlgorithmVRP:
         return distance
 
     def validate_solution(self, solution):
-        """Ensure all customers are served exactly once and capacity constraints are satisfied."""
+        """Ensure all constraints are satisfied."""
+        # Check that all customers are served exactly once
         served_customers = set()
-        for hub in self.hubs:
-            hub_routes = solution[hub]
-            for route in hub_routes:
-                # Check for capacity constraints
-                if not self.validate_route(route, hub):
-                    return False
+        for hub, routes in solution.items():
+            for route in routes:
+                route_demand = sum(self.demands[c] for c in route if c != hub)
+                if route_demand > self.vehicle_capacity:
+                    return False  # Exceeds vehicle capacity
                 for customer in route:
                     if customer != hub:
                         if customer in served_customers:
-                            return False  # Duplicate visit detected
+                            return False  # Duplicate visit
                         served_customers.add(customer)
-        return served_customers == set(self.customers)  # Ensure all customers are visited
+        return served_customers == set(self.customers)
+
+    def crossover(self, parent1, parent2):
+        """Perform crossover between two parents."""
+        child = {}
+        for hub in self.hubs:
+            routes1 = parent1.get(hub, [])
+            routes2 = parent2.get(hub, [])
+            # Simple one-point crossover for routes
+            if len(routes1) > 1 and len(routes2) > 1:
+                split_point = random.randint(1, min(len(routes1), len(routes2)) - 1)
+                child_routes = routes1[:split_point] + routes2[split_point:]
+            else:
+                # If not enough routes for crossover, copy routes from one parent
+                child_routes = routes1 if len(routes1) >= len(routes2) else routes2
+            child[hub] = child_routes
+        return child
+
 
     def mutate(self, solution):
         """Apply mutation to a solution."""
         new_solution = {}
-        for hub in self.hubs:
-            routes = solution[hub]
+        for hub, routes in solution.items():
             mutated_routes = []
             for route in routes:
                 route = route.copy()
                 if random.random() < self.mutation_rate:
-                    route = self.swap_mutation(route, hub)
+                    random.shuffle(route[1:-1])  # Mutate route (exclude hubs)
                 mutated_routes.append(route)
             new_solution[hub] = mutated_routes
-        # Repair solution to remove duplicates and ensure all customers are assigned
-        new_solution = self.repair_solution(new_solution)
         return new_solution
 
-    def swap_mutation(self, route, hub):
-        """Swap two customers in a route."""
-        customer_indices = [i for i in range(1, len(route) - 1)]  # Exclude hubs at start and end
-        if len(customer_indices) < 2:
-            return route
-        idx1, idx2 = random.sample(customer_indices, 2)
-        route[idx1], route[idx2] = route[idx2], route[idx1]
-        return route
 
-    def select_parents(self, fitness_scores):
-        """Select two parents using tournament selection."""
-        tournament_size = 5
-        selected = random.sample(list(zip(self.population, fitness_scores)), tournament_size)
-        parent1 = min(selected, key=lambda x: x[1])[0]
-        selected = random.sample(list(zip(self.population, fitness_scores)), tournament_size)
-        parent2 = min(selected, key=lambda x: x[1])[0]
-        return parent1, parent2
 
-    def crossover(self, parent1, parent2):
-        """Perform crossover between two parents."""
-        child1 = {}
-        child2 = {}
-        for hub in self.hubs:
-            routes1 = parent1[hub]
-            routes2 = parent2[hub]
-            # For simplicity, perform one-point crossover on the routes list
-            if len(routes1) > 1 and len(routes2) > 1:
-                crossover_point = random.randint(1, min(len(routes1), len(routes2)) - 1)
-                child1_routes = routes1[:crossover_point] + routes2[crossover_point:]
-                child2_routes = routes2[:crossover_point] + routes1[crossover_point:]
-            else:
-                child1_routes = [route.copy() for route in routes1]
-                child2_routes = [route.copy() for route in routes2]
-            # Repair routes to ensure all customers are included and no duplicates
-            child1[hub] = self.repair_routes(child1_routes, hub)
-            child2[hub] = self.repair_routes(child2_routes, hub)
-        return child1, child2
+    def validate_solution(self, solution):
+        """Ensure all constraints are satisfied."""
+        # Check that all customers are served exactly once
+        served_customers = set()
+        for hub, routes in solution.items():
+            for route in routes:
+                route_demand = sum(self.demands[c] for c in route if c != hub)
+                if route_demand > self.vehicle_capacity:
+                    return False  # Exceeds vehicle capacity
+                for customer in route:
+                    if customer != hub:
+                        if customer in served_customers:
+                            return False  # Duplicate visit
+                        served_customers.add(customer)
+        return served_customers == set(self.customers)
 
     def repair_routes(self, routes, hub):
         """Ensure that all assigned customers are included and no duplicates."""
@@ -222,43 +207,86 @@ class GeneticAlgorithmVRP:
                 routes.append([assigned_hub, customer, assigned_hub])
         return solution
 
+    def swap_mutation(self, route, hub):
+        """Swap two customers in a route."""
+        customer_indices = [i for i in range(1, len(route) - 1)]  # Exclude hubs at start and end
+        if len(customer_indices) < 2:
+            return route
+        idx1, idx2 = random.sample(customer_indices, 2)
+        route[idx1], route[idx2] = route[idx2], route[idx1]
+        return route
+    
+    def evaluate_solution(self, solution):
+        """Calculate total cost of a solution, including travel distance and fixed hub costs."""
+        total_distance = 0
+        #total_fixed_costs = sum(self.fixed_costs[hub] for hub in solution.keys())
+        for hub, routes in solution.items():
+            for route in routes:
+                total_distance += self.calculate_route_distance(route)
+        return total_distance #+ total_fixed_costs
+
     def run(self):
         """Run the genetic algorithm."""
+        # Step 1: Initialize the population
         self.initialize_population()
         if not self.population:
             print("Failed to initialize a valid population.")
             return None, float('inf')
+
+        # Step 2: Iterate through generations
         for generation in range(self.num_generations):
-            fitness_scores = []
-            for solution in self.population:
-                if not self.validate_solution(solution):
-                    fitness_scores.append(float('inf'))
-                else:
-                    fitness_scores.append(self.evaluate_solution(solution))
+            # Step 3: Evaluate fitness of solutions
+            fitness_scores = [self.evaluate_solution(sol) for sol in self.population]
             best_index = fitness_scores.index(min(fitness_scores))
+
+            # Update the best solution found so far
             if fitness_scores[best_index] < self.best_cost:
                 self.best_cost = fitness_scores[best_index]
                 self.best_solution = self.population[best_index]
                 print(f"Generation {generation}: Best Cost = {self.best_cost}")
+
+            # Step 4: Create the next generation
             new_population = []
             while len(new_population) < self.population_size:
-                parent1, parent2 = self.select_parents(fitness_scores)
+                # Select parents
+                parent1, parent2 = random.sample(self.population, 2)
+
+                # Apply crossover
                 if random.random() < self.crossover_rate:
-                    child1, child2 = self.crossover(parent1, parent2)
+                    child1 = self.crossover(parent1, parent2)
+                    child2 = self.crossover(parent2, parent1)
                 else:
-                    child1 = parent1.copy()
-                    child2 = parent2.copy()
+                    child1, child2 = parent1.copy(), parent2.copy()
+
+                # Apply mutation
                 child1 = self.mutate(child1)
                 child2 = self.mutate(child2)
+
+                # Repair solutions to ensure feasibility
+                child1 = {hub: self.repair_routes(child1[hub], hub) for hub in self.hubs}
+                child2 = {hub: self.repair_routes(child2[hub], hub) for hub in self.hubs}
+
+                # Repair entire solution to remove duplicates and ensure all customers are served
+                child1 = self.repair_solution(child1)
+                child2 = self.repair_solution(child2)
+
                 # Validate and add to new population
                 if self.validate_solution(child1):
                     new_population.append(child1)
                 if self.validate_solution(child2):
                     new_population.append(child2)
+
+                # Break if population is full
                 if len(new_population) >= self.population_size:
                     break
+
+            # Update the population
             self.population = new_population[:self.population_size]
+
+            # If population dies out, stop early
             if not self.population:
                 print("Population died out.")
                 break
+
+        # Step 5: Return the best solution found
         return self.best_solution, self.best_cost
